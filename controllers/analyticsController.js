@@ -1,16 +1,30 @@
-// controllers/analyticsController.js
-const dbConnection = require('../config/database'); 
+const dbConnection = require('../config/database');
+const { getBudgetUtilization } = require('../services/budgetService'); // Import service baru
+
+function formatDateTime(dateObj) {
+    if (!dateObj) return null;
+    const year = dateObj.getFullYear();
+    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const day = String(dateObj.getDate()).padStart(2, '0');
+    const hours = String(dateObj.getHours()).padStart(2, '0');
+    const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+    const seconds = String(dateObj.getSeconds()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
 
 async function getMonthlyBudgetSummary(req, res) {
+    // ... (Fungsi ini tetap sama, hanya mengambil data pengeluaran)
     const userId = req.params.userId;
     
-    // Asumsi: Kita ingin menganalisis bulan saat ini.
-    // Di lingkungan produksi, tanggal ini bisa dikirim dari frontend.
-    const today = new Date();
-    const startOfMonth = today.toISOString().slice(0, 7) + '-01 00:00:00'; 
-    const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59)
-                       .toISOString().slice(0, 19).replace('T', ' ');
+    if (req.user.userId != userId) {
+        return res.status(403).json({ error: "Forbidden: Accessing data for another user." });
+    }
 
+    const today = new Date();
+    const startOfMonthObj = new Date(today.getFullYear(), today.getMonth(), 1, 0, 0, 0);
+    const startOfMonth = formatDateTime(startOfMonthObj);
+    const endOfMonthObj = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59);
+    const endOfMonth = formatDateTime(endOfMonthObj);
 
     const sql = `
         SELECT 
@@ -29,10 +43,9 @@ async function getMonthlyBudgetSummary(req, res) {
     try {
         const [results] = await dbConnection.execute(sql, [userId, startOfMonth, endOfMonth]);
         
-        // Memformat hasil agar terlihat lebih rapi
         const summary = results.map(item => ({
             category: item.category,
-            total_spent: parseFloat(item.total_spent).toFixed(2) // Format ke 2 desimal
+            total_spent: parseFloat(item.total_spent).toFixed(2)
         }));
 
         res.status(200).json(summary);
@@ -42,4 +55,15 @@ async function getMonthlyBudgetSummary(req, res) {
     }
 }
 
-module.exports = { getMonthlyBudgetSummary };
+async function getFullBudgetUtilization(req, res) { // Fungsi baru untuk dashboard
+    const userId = req.params.userId;
+    try {
+        const utilizationData = await getBudgetUtilization(userId);
+        res.status(200).json(utilizationData);
+    } catch (error) {
+        console.error("Error fetching budget utilization:", error.message);
+        res.status(500).json({ error: error.message || "Failed to calculate budget utilization." });
+    }
+}
+
+module.exports = { getMonthlyBudgetSummary, getFullBudgetUtilization };

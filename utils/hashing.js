@@ -11,8 +11,8 @@ function generateBlockchainHash(accountId, amount, date, description) {
     const hashString = JSON.stringify(dataToHash, Object.keys(dataToHash).sort());
     
     const shaSignature = crypto.createHash('sha256')
-                                 .update(hashString)
-                                 .digest('hex');
+                               .update(hashString)
+                               .digest('hex');
     return shaSignature;
 }
 

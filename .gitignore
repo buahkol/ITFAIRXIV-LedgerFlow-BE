@@ -1,0 +1,9 @@
+# .gitignore content
+# Dependencies
+/node_modules
+
+# Environment variables
+.env
+
+# Logs and other temporary files
+npm-debug.log

@@ -1,5 +1,6 @@
 // controllers/transactionController.js
-const dbConnection = require('../config/database'); 
+const dbConnection = require('../config/database');
+const { updateTransactionCategory } = require('../services/transactionService'); // Import fungsi service
 
 // Fungsi pembantu untuk memformat tanggal ke YYYY-MM-DD HH:MM:SS
 function formatDateTime(dateObj) {
@@ -10,6 +11,11 @@ function formatDateTime(dateObj) {
 
 async function getTransactionsByUserId(req, res) {
     const userId = req.params.userId;
+    
+    // VERIFIKASI: Pastikan ID di URL sama dengan ID di token
+    if (req.user.userId != userId) {
+        return res.status(403).json({ error: "Forbidden: Accessing data for another user." });
+    }
 
     const sql = `
         SELECT 
@@ -31,7 +37,6 @@ async function getTransactionsByUserId(req, res) {
     try {
         const [results] = await dbConnection.execute(sql, [userId]);
         
-        // *** PERBAIKAN: Memformat ulang data yang diambil ***
         const formattedResults = results.map(tx => {
             return {
                 ...tx,
@@ -40,7 +45,7 @@ async function getTransactionsByUserId(req, res) {
             };
         });
 
-        res.status(200).json(formattedResults); // Mengirim hasil yang sudah diformat
+        res.status(200).json(formattedResults);
         
     } catch (error) {
         console.error("Error fetching transactions:", error.message);
@@ -48,13 +53,10 @@ async function getTransactionsByUserId(req, res) {
     }
 }
 
-// controllers/transactionController.js (Tambahkan ini di akhir file)
-const { updateTransactionCategory } = require('../services/transactionService'); // Import fungsi baru
-
 async function patchTransactionCategory(req, res) {
-    const userTransactionId = req.params.userTransactionId; // Ambil ID dari URL
-    const { category } = req.body; // Ambil kategori baru dari body
-
+    const userTransactionId = req.params.userTransactionId; 
+    const { category } = req.body; 
+    
     if (!category) {
         return res.status(400).json({ error: "Category field is required for update." });
     }
@@ -63,11 +65,13 @@ async function patchTransactionCategory(req, res) {
         const result = await updateTransactionCategory(userTransactionId, category);
         res.status(200).json({ message: "Transaction category successfully updated.", data: result });
     } catch (error) {
-        if (error.message.includes("not found")) {
+        // Penanganan error khusus dari service
+        if (error.status === 404) {
              return res.status(404).json({ error: error.message });
         }
+        console.error("Error patching transaction category:", error.message);
         res.status(500).json({ error: "Failed to update category." });
     }
 }
 
-module.exports = { getTransactionsByUserId, patchTransactionCategory }; // <-- EXPORT FUNGSI BARU
+module.exports = { getTransactionsByUserId, patchTransactionCategory };

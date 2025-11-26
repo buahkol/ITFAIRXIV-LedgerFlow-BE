@@ -17,5 +17,9 @@
   "bugs": {
     "url": "https://github.com/buahkol/ITFAIRXIV-LedgerFlow-BE/issues"
   },
-  "homepage": "https://github.com/buahkol/ITFAIRXIV-LedgerFlow-BE#readme"
+  "homepage": "https://github.com/buahkol/ITFAIRXIV-LedgerFlow-BE#readme",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "jsonwebtoken": "^9.0.2"
+  }
 }
