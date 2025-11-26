@@ -1,5 +1,9 @@
 const dbConnection = require('../config/database');
-const { getMonthlyBudgetSummary } = require('../controllers/analyticsController');
+const axios = require('axios'); 
+
+// URL Layanan AI FastAPI (Port 8000)
+const AI_SERVICE_URL = 'http://localhost:8000/calculate-score';
+
 
 // Helper untuk tanggal
 function getMonthRange() {
@@ -39,7 +43,10 @@ async function setMonthlyBudget(userId, budgets) {
         const insertedBudgets = [];
         
         for (const budget of budgets) {
-            const params = [userId, budget.category, budget.limit, start, end];
+            // Pastikan limit dikonversi menjadi float string untuk DB
+            const limitValue = parseFloat(budget.limit).toFixed(2); 
+
+            const params = [userId, budget.category, limitValue, start, end];
             await connection.execute(insertSql, params);
             insertedBudgets.push(budget.category);
         }
@@ -71,10 +78,65 @@ async function getMonthlyBudgetSettings(userId) {
     return results;
 }
 
+
+// FUNGSI UTAMA UNTUK MENGAMBIL DATA MENTAH
+async function getRawTransactionsAndBalance(userId) {
+    // 1. Ambil semua transaksi pengguna (diperlukan untuk analisis LLM)
+    const transactionsSql = `
+        SELECT 
+            TL.original_date,
+            TU.category,
+            TL.original_amount,
+            CASE WHEN TL.original_amount < 0 THEN 'debit' ELSE 'credit' END AS type
+        FROM Transactions_User TU
+        JOIN Transactions_Ledger TL ON TU.ledger_id = TL.ledger_id
+        WHERE TU.user_id = ?
+        ORDER BY TL.original_date ASC;
+    `;
+    
+    // 2. Ambil total saldo saat ini
+    const balanceSql = `
+        SELECT SUM(current_balance) AS total_balance
+        FROM FinancialAccounts
+        WHERE user_id = ?;
+    `;
+
+    const [transactionsResults] = await dbConnection.execute(transactionsSql, [userId]);
+    const [balanceResults] = await dbConnection.execute(balanceSql, [userId]);
+
+    const currentBalance = balanceResults[0].total_balance ? parseFloat(balanceResults[0].total_balance) : 0.00;
+
+    const formattedTransactions = transactionsResults
+        // Filter: Hanya proses transaksi yang memiliki amount valid dan bukan NaN/Null
+        .filter(tx => tx.original_amount != null && !isNaN(tx.original_amount))
+        .map(tx => {
+            const dateObj = tx.original_date;
+
+            // Pastikan format tanggal adalah YYYY-MM-DD
+            const dateString = (dateObj instanceof Date) 
+                ? dateObj.toISOString().slice(0, 10) 
+                : String(dateObj).slice(0, 10); // Jika string, potong untuk keamanan
+
+            return {
+                date: dateString, 
+                category: tx.category,
+                // WAJIB: Konversi ke NUMBER primitive JavaScript (bukan string)
+                amount: Number(tx.original_amount), 
+                type: (tx.original_amount < 0) ? 'debit' : 'credit' 
+            };
+        });
+    
+    return { transactions: formattedTransactions, currentBalance: currentBalance };
+}
+
+
 async function getBudgetUtilization(userId) {
+    // ... (Fungsi ini tetap sama untuk menghitung Utilization Dashboard)
+    const { start, end } = getMonthRange();
+
     const [settings, spentResults] = await Promise.all([
         getMonthlyBudgetSettings(userId),
-        // Kita perlu memanggil fungsi query summary secara langsung
+        // Query untuk mengambil spent
         dbConnection.execute(`
             SELECT 
                 TU.category,
@@ -86,7 +148,7 @@ async function getBudgetUtilization(userId) {
               AND TL.original_date >= ?
               AND TL.original_date <= ?
             GROUP BY TU.category;
-        `, [userId, getMonthRange().start, getMonthRange().end])
+        `, [userId, start, end])
     ]);
     
     const spentMap = spentResults[0].reduce((map, item) => {
@@ -112,40 +174,81 @@ async function getBudgetUtilization(userId) {
     return utilization;
 }
 
+
 async function getFinanceHealthScore(userId) {
-    const utilizationData = await getBudgetUtilization(userId);
-    
-    if (utilizationData.length === 0) {
-        return { score: 50, status: "Warning", message: "Budget not set. Health score is estimated.", utilization: [] };
-    }
+    // 1. Ambil data mentah dari DB
+    const { transactions, currentBalance } = await getRawTransactionsAndBalance(userId);
 
-    // Hitung rata-rata kepatuhan: (jumlah kategori di bawah 100% / total kategori)
-    const totalCategories = utilizationData.length;
-    const compliantCategories = utilizationData.filter(item => parseFloat(item.utilization_percent) <= 100).length;
-    
-    // Hitung skor kepatuhan (bobot 70%)
-    const complianceRatio = compliantCategories / totalCategories;
-    let score = 50 + (complianceRatio * 50); // Base score 50, max 100
-
-    // Logika AI-Powered Analysis Sederhana (sesuaikan dengan kebutuhan bisnis)
-    let status = 'Optimal';
-    let message = 'Your spending habits align perfectly with your budget goals.';
-    
-    if (complianceRatio < 0.75) {
-        status = 'On Track';
-        message = 'Most categories are stable, but a few are nearing the limit. Stay cautious!';
+    if (transactions.length === 0) {
+        return { 
+            financial_score: 50, 
+            days_to_zero: 999, 
+            advice: "No transaction data found. Please ensure your accounts are linked to start AI analysis." 
+        };
     }
-    if (complianceRatio < 0.5) {
-        status = 'Overbudget';
-        message = 'Critical alert! Multiple categories exceeded the budget. Review your spending immediately.';
-    }
+    
+    try {
+        // 2. Panggil Layanan AI FastAPI
+        const response = await axios.post(AI_SERVICE_URL, {
+            transactions: transactions,
+            current_balance: currentBalance
+        });
 
-    return { 
-        score: Math.round(score), 
-        status: status, 
-        message: message,
-        utilization: utilizationData 
-    };
+        // Response dari FastAPI sudah berupa JSON yang sesuai dengan skema FinancialAnalysisResult
+        const result = response.data;
+
+        // 3. Masukkan data utilization dari logika lama (penting untuk dashboard)
+        const utilizationData = await getBudgetUtilization(userId);
+        
+        // 4. Gabungkan dan kembalikan hasil AI
+        return {
+            financial_score: result.financial_score,
+            days_to_zero: result.days_to_zero,
+            advice: result.advice,
+            monthly_spending_shifts: result.monthly_spending_shifts,
+            utilization: utilizationData 
+        };
+
+    } catch (error) {
+        // Log error asli (untuk debugging)
+        console.error("Failed to connect to AI Service (FastAPI) or AI call failed:", error.message);
+        
+        // Fallback: Kembalikan pesan kegagalan
+        return { 
+            financial_score: 50, 
+            days_to_zero: 999, 
+            advice: "AI Service is temporarily unavailable. Displaying default health information." 
+        };
+    }
 }
 
-module.exports = { setMonthlyBudget, getMonthlyBudgetSettings, getBudgetUtilization, getFinanceHealthScore };
+// services/budgetService.js (Tambahkan di bagian paling bawah)
+
+async function testAIService(userId) {
+    const cleanTransaction = [{
+        date: "2025-11-26",
+        category: "Test",
+        amount: 100.00, // FLOAT SEDERHANA
+        type: "credit"
+    }];
+    
+    try {
+        const response = await axios.post(AI_SERVICE_URL, {
+            transactions: cleanTransaction,
+            current_balance: 5000000.00
+        });
+        return { success: true, status: response.status, data: response.data };
+    } catch (error) {
+        console.error("TEST FAILED:", error.message);
+        return { success: false, status: error.response ? error.response.status : 'N/A', error: error.message };
+    }
+}
+
+
+module.exports = { 
+    setMonthlyBudget, 
+    getMonthlyBudgetSettings, 
+    getBudgetUtilization, 
+    getFinanceHealthScore,
+    testAIService 
+};

@@ -19,6 +19,7 @@
   },
   "homepage": "https://github.com/buahkol/ITFAIRXIV-LedgerFlow-BE#readme",
   "dependencies": {
+    "axios": "^1.13.2",
     "dotenv": "^17.2.3",
     "jsonwebtoken": "^9.0.2"
   }
